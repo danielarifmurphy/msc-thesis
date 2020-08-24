@@ -1,0 +1,372 @@
+library(glmnet)
+
+micro <-  read.table("~/Durham/R/MSc Thesis/d1.txt",header=TRUE,quote="")
+micro_labels <- read.table("~/Durham/R/MSc Thesis/d1_sample_classes.txt",header=TRUE)
+dim(micro)
+#[1] 17816   287          # first column just contains names
+dimnames(micro)[[1]]<- micro[,1]
+micro<-micro[,2:287]
+dim(micro)
+#[1] 17816   286
+# i.e 17816 genes (p)
+# 286 observations (n)
+gen_names = dimnames(micro)[[1]] %>% print()
+
+head(micro)
+names(micro)
+names(micro_labels)
+as.factor(micro_labels$GROUP)
+
+# bring in n x p format 
+smicro<-  t(micro)
+dim(smicro)
+#[1]   286 17816
+pairs(smicro[,11:20])  # an arbitrary choice of 10 genes
+pairs(smicro[,11:20], col=as.factor(micro_labels$GROUP)) 
+# if for a particular gene, the red labels are well (vertically)
+# separated from the black labels, then this would indicate a relevant gene to distinguish between groups A and B
+
+micro = cbind(micro_labels, smicro)
+micro = as.data.frame((micro))
+dim(micro)
+#[1]   286 17820
+micro[,"SAMPLE"] = as.factor(micro[,"SAMPLE"])  %>% print()
+micro[,"GROUP"] = as.factor(micro[,"GROUP"])  %>% print()  # Levels: A B
+micro[,"ER"] = as.factor(micro[,"ER"])  %>% print()        # Levels: ER- ER+
+micro[,"TYPE"] = as.factor(micro[,"TYPE"])  %>% print()    # Levels: _ basal errb2 lumA lumB normal
+
+microX = as.matrix(micro[,5:17820]) # all rows, minus label columns
+dim(microX)
+microY = micro[,"GROUP"]
+microY
+
+
+
+# regression of response category versus expression level:
+fit<- glm(microY~ microX[,11:20], family="binomial")
+summary(fit)
+# four of the 10 genes seem to contain some relevant information for the cancer type....
+
+# need to do for more/all genes...
+
+
+################################################
+set.seed(42)
+nrow(micro)
+index = 1:nrow(micro)
+testindex = sample(index, trunc(length(index)/2))
+testset = micro[testindex, ]
+trainset = micro[-testindex, ]
+x_train = data.matrix(trainset[,5:17820])
+y_train = as.numeric(trainset[,"GROUP"])-1 # y values must be 0 <= y <= 1
+x_test = data.matrix(testset[,5:17820])
+y_test = as.numeric(testset[,"GROUP"])-1
+length(y_test)
+y_test
+
+
+
+#
+## Logistic Regression (demo to see if works):
+lr_model = glm(y_train~ x_train[,11:75], family=binomial)
+summary(lr_model)
+varImp(lr_model) # the importance of each variable in model
+coef(lr_model)
+plot(lr_model)
+sum(abs(coef(lr_model))>0)
+# 11 with intercept (all)
+
+
+
+################################################
+
+# all the data (ridge (alpha = 0) runs!! Takes about 3 mins)
+set.seed(42)
+cv.ridge <- cv.glmnet(sbrcanc, as.factor(brcanc.labels$GROUP), alpha = 0, family="binomial")
+plot(cv.ridge)
+fit <- glmnet(sbrcanc, as.factor(brcanc.labels$GROUP), alpha = 0, family="binomial")
+coef(cv.ridge)
+summary(fit)
+plot(fit, xvar="lambda", label=TRUE)
+sum(abs(coef(cv.ridge, s=cv.ridge$lambda.min))>0)
+# 17817!
+
+
+#################### THIS COPY IS FOR ALL DATA ie PRE TRAIN/TEST SPLIT ####################
+# LASSO:
+set.seed(42)
+cv.lasso <- cv.glmnet(microX, as.factor(microY), alpha = 1, family="binomial")
+cv.lasso
+plot(cv.lasso)
+fit <- glmnet(sbrcanc, as.factor(brcanc.labels$GROUP), alpha = 1, family="binomial")
+coef(cv.lasso)
+summary(fit)
+plot(fit, xvar="lambda", label=TRUE)
+sum(abs(coef(cv.lasso, s=cv.lasso$lambda.min))>0)
+# 34!!
+
+
+
+############# TRAINING ALGORITHMS #############
+#
+## LASSO LR:
+require(glmnet)
+set.seed(42)
+cv_lasso = cv.glmnet(x_train, as.factor(y_train), family=binomial, alpha=1, nfolds=10) # 10 mins
+lambda.min_lasso = cv_lasso$lambda.min
+coef_lasso = coef(cv_lasso, s= lambda.min_lasso)
+plot(cv_lasso)
+
+lasso_model = glmnet(x_train, y_train, family="binomial", alpha=1)
+coef(lasso_model)
+plot(lasso_model)
+lasso_coef_plot = plot(lasso_model,"lambda",label=T, main="") %>% return()
+abline(v=log(lambda.min_lasso), lty=3)
+
+coef(cv_lasso, s=lambda.min_lasso)
+sum(abs(coef(cv_lasso, s=lambda.min_lasso))>0)
+# 21!!
+
+
+
+#
+## Elastic-net LR:
+# Build the model using the training set
+library(caret)
+set.seed(42)
+fitControl <- trainControl("cv", number = 10, savePredictions = TRUE)
+en_model <- train(x=x_train, y=y_train, data = trainset,
+                  method = "glmnet",
+                  trControl = fitControl,
+                  tuneLength = 10
+)
+
+# Best tuning parameter
+en_model
+en_model$bestTune
+#   alpha   lambda
+#90   0.9 0.232396 (very close to lasso)
+# head(en_model$finalModel) # takes too long
+
+# Coefficient of the final model. You need to specify the best lambda
+coef(en_model$finalModel, en_model$bestTune$lambda)
+sum(abs(coef(en_model$finalModel, en_model$bestTune$lambda))>0)
+# 1??? 
+plot(en_model)
+plot(en_model$finalModel, "lambda", label=T, main="") # Plots coefficient values againt log(Lambda)
+abline(v=log(en_model$bestTune$lambda), lty=3)
+
+# Elastic-net using  (caret) params from above:
+set.seed(42)
+cv_en = cv.glmnet(x_train, as.factor(y_train), family=binomial, alpha=0.9) # 4 mins
+lambda.min_en = cv_en$lambda.min %>% print()
+coef_en = coef(cv_en, s= lambda.min_en)
+plot(cv_en)
+
+en_model2 = glmnet(x_train, y_train, family="binomial", alpha=0.9)
+coef(en_model2)
+plot(en_model2)
+en_coef_plot = plot(en_model2,"lambda",label=T, main="") %>% return()
+abline(v=log(lambda.min_en), lty=3)
+abline(v=log(en_model$bestTune$lambda), lty=3)
+
+coef(cv_en, s=lambda.min_en)
+sum(abs(coef(cv_lasso, s=lambda.min_en))>0)
+# 16!!
+
+
+
+#
+## Kernel LR (CVST):
+library(CVST)
+set.seed(42)
+d = constructData(x=x_train, y=as.factor(y_train)) ## Structure data in CVST format
+d
+class(d)=="CVST.data"   # TRUE
+isClassification(d)     # TRUE
+klr_learner = constructKlogRegLearner()   ## Build the base learner
+klr_learner
+param = constructParams(kernel='rbfdot', sigma=10^(-1:5), lambda=10^(-2:1)) ## Function params; documentation defines lambda as '.1/getN(d)'
+class(param)
+opt = CVST::CV(d, klr_learner, param, fold = 5, verbose = TRUE) # # CV() masked by penalizedSVM package
+opt
+# `kernel=rbfdot sigma=0.1 lambda=0.01`
+param_opt = list(kernel='rbfdot',
+                 sigma=opt$`kernel=rbfdot sigma=0.1 lambda=0.01`$sigma,
+                 lambda=opt$`kernel=rbfdot sigma=0.1 lambda=0.01`$lambda)
+
+klr_model = klr_learner$learn(d, param_opt)
+klr_model
+summary(klr_model)
+
+# predictions with package
+new_d = constructData(x=x_test, y=as.factor(y_test))
+new_d
+klr_pred = klr_learner$predict(klr_model, new_d) # why all 1s??
+klr_pred
+class(klr_pred)
+
+# only two metrics can get:
+sum(klr_pred != y_train) / getN(new_d) # high error since all 1s...
+RMSE(as.numeric(klr_pred), as.numeric(y_test)) # RMSE
+
+
+
+#
+## Support-vector machine (linear):
+set.seed(42)
+svm_lin_model <- train(x_train, as.factor(y_train), data = trainset, method = "svmLinear",
+                       trControl = fitControl,
+                       tuneLength = 10
+) # 2 mins to train
+# Best tuning parameter
+svm_lin_model
+svm_lin_model$bestTune
+svm_lin_model$finalModel
+
+# or:
+svm_lin_model2 = svm(x_train, y_train, kernel="linear", cross=10) # 1 min to train
+summary(svm_lin_model2)
+
+
+
+#
+## Support-vector machine (RBF):
+svm_rbf_model <- train(x_train, as.factor(y_train), data = cancer, method = "svmRadial",
+                       trControl = fitControl,
+                       tuneLength = 10
+) # 10 mins to train
+# Best tuning parameter
+svm_rbf_model
+svm_rbf_model$bestTune
+#         sigma C
+#4 2.975075e-05 2
+svm_rbf_model$finalModel
+
+# or:
+svm_rbf_model2 = svm(x_train, y_train, kernel="radial", cross=10) # 1 min to train
+summary(svm_rbf_model2)
+
+
+
+
+# L1-norm SVM (SCAD):
+require(penalizedSVM)
+set.seed(42)
+Lambda.scad = seq(0.01,0.05,0.01)
+fit_scad = svmfs(x = sbrcanc, y = 2*(as.numeric(brcanc.labels$GROUP)-1)-1,
+                 fs.method = "scad",
+                 lambda1.set = Lambda.scad,
+                 maxIter = 10)
+# 20 mins lol
+summary(fit_scad)
+my_pred = predict(fit_scad, newdata=x_test)
+test.error.scad<-predict(fit_scad, newdata=x_test, newdata.labels=2*y_test-1) %>% print()
+#$tab
+#   -1  1
+#-1 97 46
+#1   0  0
+#$error
+#[1] 0.3216783
+#$sensitivity
+#[1] 0
+#$specificity
+#[1] 1
+
+
+#
+## SCAD SVM:
+set.seed(42)
+Lambda.scad = seq(0.01,0.05,0.01)
+class(y_train) # "numeric"
+scad_model = svmfs(x = x_train, y = 2*y_train-1,
+                   fs.method = "scad", 
+                   lambda1.set = Lambda.scad,
+                   parms.coding = "none", show="none",
+                   maxIter = 10, inner.val.method = "cv", cross.inner= 5,
+                   seed=42, verbose=FALSE) # takes too long to train
+summary(scad_model)
+str(scad_model)
+scad_model$model$xind # selects [...]
+
+# predictions with package
+pred = predict(scad_model, newdata=x_test) 
+summary(pred)
+pred$fitted
+scad_test_error<-predict(scad_model, newdata=x_test, newdata.labels=2*y_test-1)
+scad_test_error ## accuracy = 1-$error = 0.6783217
+
+# for reference:
+model <- scadsvc(x = x_train, y = 2*y_train-1, lambda=0.05)
+model
+#Selected Variables=  203071_at 204015_s_at 208719_s_at 211627_x_at 211674_x_at 213201_s_at 213946_s_at 215879_at 217556_at 217705_at 218775_s_at 219768_at 219850_s_at 220030_at 220300_at 37145_at
+#Coefficients:
+#  203071_at 204015_s_at 208719_s_at 211627_x_at 211674_x_at 213201_s_at 213946_s_at   215879_at 
+#-0.4598274  -0.6916727  -0.5506838   0.3590795  -0.7206413   0.4049677  -0.3049139   0.5347764 
+#217556_at   217705_at 218775_s_at   219768_at 219850_s_at   220030_at   220300_at    37145_at 
+#0.5514330   0.3386975   0.9812861  -0.4521169  -0.4956632   0.3384990   0.4893732  -0.5944801 
+model$xind ###### indexes of the 16 selected features
+# [1]  2526  3416  6854  9070  9109 10489 11141 12501 13436 13530 14571 15480 15538 15690 15881
+#[16] 17426
+
+
+
+
+############# TESTSET PREDICTIONS #############
+require("caret")
+set.seed(42)
+lr_pred = round(predict(lr_model, newdata=data.frame(x_test), type="response"), 0)
+lasso_pred = predict(cv_lasso, x_test, type="response")  %>% print() # why all = 0.3286713?????
+en_pred = predict(cv_en, x_test, type="response")  %>% print()       # why all = 0.3286713?????
+en_pred2 = predict(en_model, x_test, type="prob")  %>% print()       # doesn't work, but did for Wisconsin data
+# klr_pred = predict(klr_model, x_test, type="response")
+
+svm_lin_pred = predict(svm_lin_model, x_test) %>% print()
+svm_lin_pred2 = round(predict(svm_lin_model2, x_test, type='response'), 0) %>% print()
+svm_rbf_pred = predict(svm_rbf_model, x_test)
+svm_rbf_pred2 = round(predict(svm_rbf_model2, x_test, type='response'), 0)
+
+scad_pred = round(normalised)
+scad_pred
+
+
+# Confusion Matrix
+confusionMatrix(as.factor(lr_pred), as.factor(y_test)) # 0.5734 (from 75 selected genes! - poor as expected) 
+confusionMatrix(as.factor(round(lasso_pred)), as.factor(y_test)) # 0.6783
+confusionMatrix(as.factor(en_pred), as.factor(y_test)) # 0.6793
+
+confusionMatrix(as.factor(svm_lin_pred), as.factor(y_test)) # 0.7063*
+confusionMatrix(as.factor(svm_lin_pred2), as.factor(y_test)) # 0.7063
+confusionMatrix(as.factor(svm_rbf_pred), as.factor(y_test)) # 0.6923*
+confusionMatrix(as.factor(svm_rbf_pred2), as.factor(y_test)) # 0.6783 
+
+confusionMatrix(as.factor(scad_pred), as.factor(y_test)) # don't use this one! Scaling attempt doesn't work - use prediction function in package (0.6783217)
+
+
+# ROC curves & AUC
+library(pROC)
+roc_lr = roc(as.vector(y_test), as.vector(lr_pred)) %>%
+  print() # 0.5027 (75 selected genes - poor as expected)
+roc_lasso = roc(as.vector(y_test), as.vector(lasso_pred)) %>%
+  print() # 0.5
+roc_en = roc(as.vector(y_test), as.vector(en_pred)) %>%
+  print() # 0.5
+# roc_klr =
+roc_svm_lin = roc(as.vector(y_test), as.vector(as.numeric(svm_lin_pred))) %>% # convert from factor to numeric
+  print() # 0.6406
+roc_svm_rbf = roc(as.vector(y_test), as.vector(as.numeric(svm_rbf_pred))) %>%
+  print() # 0.556
+# roc_scad = roc(as.vector(y_test), as.vector(scad_pred)) %>% print()  # cannot plot
+
+
+plot.roc(roc_lr, col="2", ylim=c(0,1), xlim=c(1,0)) # Plot the ROC curves
+lines(roc_lasso, col="3")
+lines(roc_en, col="4")
+# lines(roc_klr, col="4")
+lines(roc_svm_lin, col="5")
+lines(roc_svm_rbf, col="6")
+# lines(roc_scad, col="7")
+legend("bottomright", legend=c("Logistic Regression", "LASSO", "Elastic-net", "SVM_Linear", "SVM_Radial"),
+       col=c(2,3,4,5,6), lwd=2)
+
+
