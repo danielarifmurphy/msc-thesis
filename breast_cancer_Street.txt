@@ -62,7 +62,7 @@ sum(abs(coef(lr_model))>0)
 ## LASSO LR:
 set.seed(42)
 cv_lasso = cv.glmnet(x_train, y_train, family=binomial, alpha=1, nfolds=5)
-lambda.min_lasso = cv_lasso$lambda.min %>% print()
+lambda.min_lasso = cv_lasso$lambda.min
 coef_lasso = coef(cv_lasso, s= lambda.min_lasso)
 plot(cv_lasso, ylab="Binomial Deviance")
 
