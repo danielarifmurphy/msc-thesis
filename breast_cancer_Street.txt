@@ -1,0 +1,228 @@
+require(glmnet)
+require(e1071)
+require(kernlab)
+require(tidyverse)
+require(caret)
+require(calibrateBinary)
+require(CVST)
+require(penalizedSVM)
+require(pROC)
+require(gelnet)
+require(corrplot)
+
+# Load dataset from UCI repository
+cancer = read.csv(paste0("http://archive.ics.uci.edu/ml/machine-learning-databases/",
+                         "breast-cancer-wisconsin/breast-cancer-wisconsin.data"), header = FALSE,
+                  stringsAsFactors = F)
+
+# Add names to the dataset
+names(cancer) = c("ID", "thickness", "cell_size", "cell_shape", "adhesion",
+                  "epithelial_size", "bare_nuclei", "bland_cromatin", "normal_nucleoli", "mitoses",
+                  "class")
+cancer = as.data.frame(cancer)
+# Recode missing values with NA
+cancer$bare_nuclei = replace(cancer$bare_nuclei, 
+                             cancer$bare_nuclei == "?", NA)
+# Remove rows with missing values
+cancer = na.omit(cancer)
+dim(cancer)
+# Recode the class (outcome) variable
+cancer$class = (cancer$class/2) - 1
+nrow(cancer)
+cancer = cancer[-683,]
+nrow(cancer)
+class(cancer)
+
+
+
+
+# ALGORITHMS -------------------------------------------------------------------------------------------------
+set.seed(42)
+index = 1:nrow(cancer)
+testindex = sample(index, trunc(length(index)/2))
+testset = cancer[testindex, ]
+trainset = cancer[-testindex, ]
+x_train = data.matrix(trainset[, 2:10])
+y_train = as.numeric(trainset[, 11])
+x_test = data.matrix(testset[, 2:10])
+y_test = as.numeric(testset[, 11])
+y_test==y_train # good
+
+
+## Logistic Regression:
+set.seed(42)
+lr_model = glm(y_train~., data=data.frame(x_train), family=binomial)
+summary(lr_model)
+varImp(lr_model)
+coef(lr_model)
+plot(lr_model)
+sum(abs(coef(lr_model))>0)
+
+
+## LASSO LR:
+set.seed(42)
+cv_lasso = cv.glmnet(x_train, y_train, family=binomial, alpha=1, nfolds=5)
+lambda.min_lasso = cv_lasso$lambda.min %>% print()
+coef_lasso = coef(cv_lasso, s= lambda.min_lasso)
+plot(cv_lasso, ylab="Binomial Deviance")
+
+lasso_model = glmnet(x_train, y_train, family="binomial", alpha=1)
+coef(lasso_model)
+plot(lasso_model)
+plot(lasso_model,"lambda",label=T, main="")
+abline(v=log(lambda.min_lasso), lty=3)
+
+coef(cv_lasso, s=lambda.min_lasso)
+sum(abs(coef(cv_lasso, s=lambda.min_lasso))>0)
+
+
+## Elastic-net LR:
+set.seed(42)
+fitControl <- trainControl("cv", number = 5, savePredictions = TRUE)
+en_model <- train(x=x_train, y=as.factor(y_train), data = trainset,
+                  method = "glmnet",
+                  trControl = fitControl,
+                  tuneLength = 10
+)
+# Best tuning parameter
+en_model
+en_model$bestTune
+en_model$finalModel
+
+# Coefficient of the final model
+coef(en_model$finalModel, en_model$bestTune$lambda)
+sum(abs(coef(en_model$finalModel, en_model$bestTune$lambda))>0)
+plot(en_model)
+plot(en_model$finalModel, "lambda", label=T, main="")
+abline(v=log(en_model$bestTune$lambda), lty=3)
+
+
+### Kernel LR (CVST):
+#set.seed(42)
+#d = constructData(x=x_train, y=as.factor(y_klr_train)) # Structure data in CVST format
+#class(d)=="CVST.data"   # TRUE
+#klr_learner = constructKlogRegLearner()   # Build the base learner
+#param = constructParams(kernel='rbfdot', sigma=10^(-1:5), lambda=10^(-2:1))
+#opt = CVST::CV(d, klr_learner, param, fold = 5, verbose = TRUE) # CV() masked by penalizedSVM package
+#param_opt = list(kernel='rbfdot',
+#                 sigma=opt$`kernel=rbfdot sigma=0.1 lambda=0.01`$sigma,
+#                 lambda=opt$`kernel=rbfdot sigma=0.1 lambda=0.01`$lambda)
+#klr_model = klr_learner$learn(d, param_opt)
+#summary(klr_model)
+
+## predictions with package
+#new_d = constructData(x=x_test, y=as.factor(y_klr_test))
+#klr_pred = klr_learner$predict(klr_model, new_d)
+#klr_pred
+#class(klr_pred)
+
+## only two metrics can get:
+#sum(klr_pred != y_train) / getN(new_d)
+#RMSE(as.numeric(klr_pred), as.numeric(y_test)) # RMSE
+
+
+## Support-vector machine (linear):
+set.seed(42)
+svm_lin_model <- train(x_train, as.factor(y_train), data = cancer, method = "svmLinear",
+                       trControl = fitControl,
+                       tuneLength = 10
+)
+svm_lin_model
+svm_lin_model$bestTune
+svm_lin_model2 = svm(x_train, y_train, kernel="linear", cross=5)
+summary(svm_lin_model2)
+
+
+## Support-vector machine (RBF):
+set.seed(42)
+svm_rbf_model <- train(x_train, as.factor(y_train), data = cancer, method = "svmRadial",
+                       trControl = fitControl,
+                       tuneLength = 10
+)
+svm_rbf_model
+svm_rbf_model$bestTune
+svm_rbf_model2 = svm(x_train, y_train, kernel="radial", cross=5)
+summary(svm_rbf_model2)
+
+
+## SCAD SVM:
+set.seed(42)
+Lambda.scad = seq(0.01,0.05,0.01)
+scad_model = svmfs(x = x_train, y = 2*y_train-1, 
+                   fs.method = "scad", 
+                   lambda1.set = Lambda.scad,
+                   parms.coding = "none", show="none",
+                   maxIter = 10, inner.val.method = "cv", cross.inner= 5,
+                   seed=42, verbose=FALSE)
+summary(scad_model)
+str(scad_model)
+scad_model$model$xind
+
+# predictions with package
+scad_pred = predict(scad_model, newdata=x_test) 
+summary(scad_pred)
+scad_pred$fitted
+scad_test_error<-predict(scad_model, newdata=x_test, newdata.labels=2*y_test-1)
+scad_test_error
+scad_test_error$sensitivity
+scad_test_error$specificity
+
+
+
+
+# TESTSET PREDICTIONS ----------------------------------------------------------------------------------------
+lr_pred = predict(lr_model, newdata=data.frame(x_test), type="response")
+lasso_pred = predict(cv_lasso, x_test, type="response")
+en_pred = t(predict(en_model, x_test, type="prob")[2])
+svm_lin_pred = predict(svm_lin_model, x_test)
+svm_lin_pred2 = predict(svm_lin_model2, x_test, type='response')
+svm_rbf_pred2 = predict(svm_rbf_model2, x_test, type='response')
+
+
+# Confusion Matrix
+confusionMatrix(as.factor(round(lr_pred)), as.factor(y_test), positive = "1")
+confusionMatrix(as.factor(round(lasso_pred)), as.factor(y_test), positive = "1")
+confusionMatrix(as.factor(round(en_pred)), as.factor(y_test), positive = "1")
+confusionMatrix(as.factor(svm_lin_pred), as.factor(y_test), positive = "1")
+confusionMatrix(as.factor(round(svm_rbf_pred2)), as.factor(y_test), positive = "1")
+
+
+# ROC curves & AUC
+roc_lr = roc(as.vector(y_test), as.vector(lr_pred))
+roc_lasso = roc(as.vector(y_test), as.vector(lasso_pred))
+roc_en = roc(as.vector(y_test), as.vector(en_pred))
+roc_svm_lin = roc(as.vector(y_test), as.vector(as.numeric(svm_lin_pred2)))
+roc_svm_rbf = roc(as.vector(y_test), as.vector(svm_rbf_pred2))
+
+
+# Plot the ROC curves
+plot.roc(roc_lr, col="2", ylim=c(0,1), xlim=c(1,0))
+lines(roc_lasso, col="3")
+lines(roc_en, col="4")
+lines(roc_svm_lin, col="5")
+lines(roc_svm_rbf, col="6")
+legend("bottomright", legend=c("Logistic Regression", "LASSO", "Elastic-net", "SVM_Linear", "SVM_Radial"),
+       col=c(2,3,4,5,6), lwd=2)
+
+
+
+
+# Visualisation ----------------------------------------------------------------------------------------------
+summary(as.factor(cancer$class))
+
+thickness = as.numeric(cancer[,2])
+cellsize = as.numeric(cancer[,3])
+cellshape = as.numeric(cancer[,4])
+adhesion = as.numeric(cancer[,5])
+epithelialsize = as.numeric(cancer[,6])
+barenuclei = as.numeric(cancer[,7])
+blandcromatin = as.numeric(cancer[,8])
+normalnucleoli = as.numeric(cancer[,9])
+mitoses = as.numeric(cancer[,10])
+
+cancer2 = cbind(thickness, cellsize, cellshape, adhesion, epithelialsize, barenuclei,
+                blandcromatin, normalnucleoli, mitoses)
+pairs(cancer2, col=as.factor(cancer[,11]))
+
+cor = cor(cancer2)
+corrplot(cor, order="original", tl.cex=0.7)

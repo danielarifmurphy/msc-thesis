@@ -1,0 +1,207 @@
+require(devtools)
+require(datamicroarray)
+require(glmnet)
+require(magrittr)
+require(caret)
+require(penalizedSVM)
+require(pROC)
+require(corrplot)
+
+data('gordon', package = 'datamicroarray')
+length(gordon$y)
+describe_data()
+class(gordon$x)
+gordon$y # Levels: adenocarcinoma mesothelioma
+
+gordon = na.omit(gordon)
+gordon$x = gordon$x[-181,]
+gordon$y = gordon$y[-181]
+
+lung = cbind(gordon$y, gordon$x)
+class(lung)
+as.factor(lung[,1] -1) == ifelse(gordon$y == "mesothelioma", 1, 0) # TRUE
+lung = as.data.frame(lung)
+
+
+
+
+# ALGORITHMS -------------------------------------------------------------------------------------------------
+set.seed(42)
+trainingsamples <- lung[,1] %>% # GROUP
+  createDataPartition(p = 0.5, list = FALSE)
+train__data <- lung[trainingsamples, ]
+test__data <- lung[-trainingsamples, ]
+x__train = data.matrix(gordon$x[trainingsamples,])
+x__test = data.matrix(gordon$x[-trainingsamples,])
+y__train = ifelse(gordon$y[trainingsamples] == "mesothelioma", 1, 0)
+y__test = ifelse(gordon$y[-trainingsamples] == "mesothelioma", 1, 0)
+
+
+## Logistic Regression:
+set.seed(42)
+lr_model_lun = glm(y__train~., data=data.frame(x__train[,1:75]), family=binomial)
+summary(lr_model_lun)
+x__train[,1:75]
+varImp(lr_model_lun)
+coef(lr_model_lun)
+plot(lr_model_lun)
+sum(abs(coef(lr_model_lun))>0)
+
+
+## LASSO LR:
+set.seed(42)
+cv_lasso_lun = cv.glmnet(x__train[,1:12533], y__train, family=binomial, alpha=1, nfolds=5)
+lambda.min_lasso_lun = cv_lasso_lun$lambda.min
+coef_lasso_lun = coef(cv_lasso_lun, s= lambda.min_lasso_lun)
+plot(cv_lasso_lun, ylab="Binomial Deviance")
+
+lasso_model_lun = glmnet(x__train[,1:12533], y__train, family="binomial", alpha=1)
+coef(lasso_model_lun)
+plot(lasso_model_lun)
+plot(lasso_model_lun,"lambda",label=T, main="")
+abline(v=log(lambda.min_lasso_lun), lty=3)
+
+coef(cv_lasso_lun, s=lambda.min_lasso_lun)
+sum(abs(coef(cv_lasso_lun, s=lambda.min_lasso_lun))>0)
+
+
+## Elastic-net LR:
+set.seed(42)
+fitControl <- trainControl("cv", number = 5, savePredictions = TRUE)
+en_model_lun <- train(x=x__train[,1:12533], y=as.factor(y__train), data = train__data,
+                      method = "glmnet",
+                      trControl = fitControl,
+                      tuneLength = 10
+)
+# Best tuning parameter
+en_model_lun
+en_model_lun$bestTune
+
+# Coefficient of the final model
+coef(en_model_lun$finalModel, en_model_lun$bestTune$lambda)
+sum(abs(coef(en_model_lun$finalModel, en_model_lun$bestTune$lambda))>0)
+plot(en_model_lun)
+plot(en_model_lun$finalModel, "lambda", label=T, main="")
+abline(v=log(en_model_lun$bestTune$lambda), lty=3)
+
+
+### Kernel LR (CVST):
+#set.seed(42)
+#d = constructData(x=x__train, y=as.factor(y__train))
+#class(d)=="CVST.data"   # TRUE
+#klr_learner = constructKlogRegLearner()
+#param = constructParams(kernel='rbfdot', sigma=10^(-1:5), lambda=10^(-2:1))
+#class(param)
+#opt_lun = CVST::CV(d, klr_learner, param, fold = 5, verbose = TRUE)
+#param_opt_lun = list(kernel='rbfdot',
+#                     sigma=opt_lun$`kernel=rbfdot sigma=0.1 lambda=0.01`$sigma,
+#                     lambda=opt_lun$`kernel=rbfdot sigma=0.1 lambda=0.01`$lambda)
+#klr_model_lun = klr_learner$learn(d, param_opt_lun)
+#klr_model_lun
+#summary(klr_model_lun)
+
+## predictions with package
+#new_d = constructData(x=x__test, y=as.factor(y__test))
+#klr_pred_lun = klr_learner$predict(klr_model_lun, new_d)
+#klr_pred_lun
+#class(klr_pred_lun)
+
+## only two metrics can get:
+#sum(klr_pred_lun != y__train) / getN(new_d)
+#RMSE(as.numeric(klr_pred_lun), as.numeric(y__test)) # RMSE
+
+
+## Support-vector machine (linear):
+set.seed(42)
+svm_lin_model_lun <- train(x__train[,1:12533], as.factor(y__train), data = train__data, method = "svmLinear",
+                           trControl = fitControl,
+                           tuneLength = 10
+)
+svm_lin_model_lun
+svm_lin_model_lun$bestTune
+svm_lin_model_lun2 = svm(x__train, y__train, kernel="linear", cross=5)
+summary(svm_lin_model_lun2)
+
+
+## Support-vector machine (RBF):
+set.seed(42)
+svm_rbf_model_lun <- train(x__train[,1:12533], as.factor(y__train), data = train__data, method = "svmRadial",
+                           trControl = fitControl,
+                           tuneLength = 10
+)
+svm_rbf_model_lun
+svm_rbf_model_lun$bestTune
+svm_rbf_model_lun2 = svm(x__train, y__train, kernel="radial", cross=5)
+summary(svm_rbf_model_lun2)
+
+
+## SCAD SVM:
+set.seed(42)
+Lambda.scad = seq(0.01,0.05,0.01)
+scad_model_lun = svmfs(x = x__train[,1:12533], y = 2*y__train-1, 
+                       fs.method = "scad", 
+                       lambda1.set = Lambda.scad,
+                       parms.coding = "none", show="none",
+                       maxIter = 10, inner.val.method = "cv", cross.inner= 5,
+                       seed=42, verbose=FALSE)
+summary(scad_model_lun)
+str(scad_model_lun)
+scad_model_lun$model$xind
+length(scad_model_lun$model$xind)
+
+# predictions with package
+scad_pred_lun = predict(scad_model_lun, newdata=x__test) 
+summary(scad_pred_lun)
+scad_pred_lun$fitted
+scad_test_error_lun<-predict(scad_model_lun, newdata=x__test, newdata.labels=2*y__test-1)
+scad_test_error_lun
+scad_test_error_lun$sensitivity
+scad_test_error_lun$specificity
+
+
+
+
+# TESTSET PREDICTIONS ------------------------------------------------------------------------------
+lr_pred_lun = predict(lr_model_lun, newdata=data.frame(x__test[,1:75]), type="response")
+lasso_pred_lun = predict(cv_lasso_lun, x__test[,1:12533], type="response")
+en_pred_lun = t(predict(en_model_lun, x__test[,1:12533], type="prob")[2])
+svm_lin_pred_lun = predict(svm_lin_model_lun, x__test[,1:12533])
+svm_lin_pred_lun2 = predict(svm_lin_model_lun2, x__test, type='response')
+svm_rbf_pred_lun2 = predict(svm_rbf_model_lun2, x__test, type='response')
+
+
+# Confusion Matrix
+confusionMatrix(as.factor(round(lr_pred_lun)), as.factor(y__test), positive = "1")
+confusionMatrix(as.factor(round(lasso_pred_lun)), as.factor(y__test), positive = "1")
+confusionMatrix(as.factor(round(en_pred_lun)), as.factor(y__test), positive = "1")
+confusionMatrix(as.factor(svm_lin_pred_lun), as.factor(y__test), positive = "1")
+confusionMatrix(as.factor(round(svm_rbf_pred_lun2)), as.factor(y__test), positive = "1")
+
+
+# ROC curves & AUC
+roc_lr2 = roc(as.vector(y__test), as.vector(round(lr_pred_lun)))
+roc_lasso2 = roc(as.vector(y__test), as.vector(round(lasso_pred_lun)))
+roc_en2 = roc(as.vector(y__test), as.vector(round(en_pred_lun)))
+roc_svm_lin2 = roc(as.vector(y__test), as.vector(round(as.numeric(svm_lin_pred_lun2))))
+roc_svm_rbf2 = roc(as.vector(y__test), as.vector(round(as.numeric(svm_rbf_pred_lun2))))
+
+
+# Plot the ROC curves
+plot.roc(roc_lr2, col="2", ylim=c(0,1), xlim=c(1,0))
+lines(roc_lasso2, col="3")
+lines(roc_en2, col="4")
+lines(roc_svm_lin2, col="5")
+lines(roc_svm_rbf2, col="6")
+legend("bottomright", legend=c("Logistic Regression", "LASSO", "Elastic-net", "SVM_Linear", "SVM_Radial"),
+       col=c(2,3,4,5,6), lwd=2)
+
+
+
+
+# Visualisation ----------------------------------------------------------------------------------------------
+summary(gordon$y)
+pairs(gordon$x[,1:10], col=as.factor(gordon$y))
+
+cor_lun = cor(gordon$x[,c(1276,1431,3277,3279,6189,6190,7200,7369,8005,8090,9130,10843, # 12 important
+                          1,2,3,4,5,6,7,8,9,10,11,12)]) # 12 unimportant
+corrplot(cor_lun, order="original", tl.cex=0.7)

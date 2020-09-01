@@ -1,0 +1,228 @@
+library(ggplot2)
+library(ISLR)
+library(tibble)
+library(datasets)
+
+# Default data graphs ----------------------------------------------------------------------------------------
+data(Default)
+as_tibble(Default)
+
+set.seed(42)
+default_idx = sample(nrow(Default), 5000)
+default_trn = Default[default_idx, ]
+default_tst = Default[-default_idx, ]
+default_trn_lm = default_trn
+default_tst_lm = default_tst
+default_trn_lm$default = as.numeric(default_trn_lm$default) - 1
+default_tst_lm$default = as.numeric(default_tst_lm$default) - 1
+
+model_lm = lm(default ~ balance, data = default_trn_lm)
+par(mfrow=c(1,1))
+plot(default ~ balance, data = default_trn_lm, 
+     col = 6, pch = "|", ylim = c(-0.2, 1),
+     main = "Linear Regression", ylab="default probability")
+abline(h = 0, lty = 3)
+abline(h = 1, lty = 3)
+abline(h = 0.5, lty = 2)
+abline(model_lm, lwd = 3, col = 7)
+
+model_glm = glm(default ~ balance, data = default_trn, family = "binomial")
+plot(default ~ balance, data = default_trn_lm, 
+     col = 6, pch = "|", ylim = c(-0.2, 1),
+     main = "Logistic Regression", ylab="default probability")
+abline(h = 0, lty = 3)
+abline(h = 1, lty = 3)
+abline(h = 0.5, lty = 2)
+curve(predict(model_glm, data.frame(balance = x), type = "response"), 
+      add = TRUE, lwd = 3, col = 7)
+abline(v = -coef(model_glm)[1] / coef(model_glm)[2], lwd = 2)
+
+
+
+
+# Lasso vs E-net for Sonar -----------------------------------------------------------------------------------
+data("Sonar")
+dim(Sonar)
+head(Sonar)
+Sonar$Class
+X = data.matrix(Sonar[,-61])
+y = ifelse(Sonar$Class == "R", 1, 0) # good=1
+par(mfrow=c(1,2))
+
+cv = cv.glmnet(X, y, family=binomial, alpha=1, nfolds=10)
+lambda.min_lasso_in2 = cv_lasso_in2$lambda.min
+coef_lasso_in2 = coef(cv_lasso_in2, s= lambda.min_lasso_in2) 
+plot(cv_lasso_in2)
+lasso_model_in2 = glmnet(X, y, family="binomial", alpha=1)
+plot(lasso_model_in2,"lambda",label=T, main="Lasso",
+     ylim=c(-1800,2600), xlab = expression(log(lambda)))
+abline(v=log(lambda.min_lasso_in2), lty=3)
+sum(abs(coef(cv_lasso_in2, s=lambda.min_lasso_in2))>0)
+sum(abs(coef(cv_lasso_in2, s=0.6144*10^(-5)))>0)
+
+cv_en_in2 = cv.glmnet(X, y, family=binomial, alpha=0.5, nfolds=10)
+lambda.min_en_in2 = cv_en_in2$lambda.min
+coef_en_in2 = coef(cv_en_in2, s= lambda.min_en_in2)
+plot(cv_en_in2)
+en_model_in2 = glmnet(X, y, family="binomial", alpha=0.5)
+plot(en_model_in2,"lambda",label=T, main="Elastic Net",
+     ylim=c(-1800,2600), xlab = expression(log(lambda)))
+abline(v=log(lambda.min_en_in2), lty=3)
+sum(abs(coef(cv_en_in2, s=lambda.min_en_in2))>0)
+sum(abs(coef(cv_en_in2, s=4.54*10^(-5)))>0)
+
+
+
+
+# SVM linear and rbf boundaries ------------------------------------------------------------------------------
+set.seed(42)
+x=matrix(runif(1000, -3,3) , ncol=2)
+y=c(rep(1,250) ,rep(2,250))
+dat=data.frame(x=x,y=as.factor(y))
+
+plot(x, col=ifelse(x[,1]^2+x[,2]^2 <4, 6,3),
+     main="Original Feature Space", xlab="X1", ylab="X2", pch=19)
+
+Z = x[,1]^2 + x[,2]^2
+cloud(Z~x[,1]+x[,2], data=dat, col=ifelse(x[,1]^2+x[,2]^2 <4, 6,3),
+      main="Higher-dimensional Space", xlab="X1", ylab="X2", zlab="X3")
+
+plot(x, col=ifelse(x[,1]^2+x[,2]^2 <4, 6,3),
+     main="Nonlinear Decision Boundary", xlab="X1", ylab="X2", pch=19)
+
+# Linearly separable
+set.seed(10)
+x <- matrix(rnorm(20*2), ncol = 2)
+x
+y <- c(rep(-1,10), rep(1,10))
+x[y==1,] <- x[y==1,] + 3/2
+
+# non-linearly separable
+set.seed(1)
+x = matrix(rnorm(40), 20, 2)
+x
+y = rep(c(-1, 1), c(10, 10))
+x[y == 1,] = x[y == 1,] + 1
+
+plot(x, pch = 19)
+dat = data.frame(x, y = as.factor(y))
+svmfit = svm(y ~ ., data = dat, kernel = "linear", cost = 10, scale = FALSE)
+print(svmfit) # 3 / 7 support vectors
+plot(svmfit, dat)
+
+make.grid = function(x, n = 75) {
+  grange = apply(x, 2, range)
+  x1 = seq(from = grange[1,1], to = grange[2,1], length = n)
+  x2 = seq(from = grange[1,2], to = grange[2,2], length = n)
+  expand.grid(X1 = x1, X2 = x2)
+}
+
+xgrid = make.grid(x)
+xgrid[1:10,]
+
+ygrid = predict(svmfit, xgrid)
+
+beta = drop(t(svmfit$coefs)%*%x[svmfit$index,])
+beta0 = svmfit$rho
+
+plot(xgrid, col = c("red", "blue")[as.numeric(ygrid)], pch = 20, cex = .2)
+points(x, col = y + 3, pch = 19)
+points(x[svmfit$index,], pch = 5, cex = 2)
+abline(beta0 / beta[2], -beta[1] / beta[2])
+abline((beta0 - 1) / beta[2], -beta[1] / beta[2], lty = 2)
+abline((beta0 + 1) / beta[2], -beta[1] / beta[2], lty = 2)
+
+
+
+
+# ESL mixture example ----------------------------------------------------------------------------------------
+load(file = "/cloud/project/Thesis/Toy Examples/ESL.mixture.rda")
+
+names(ESL.mixture)
+rm(x, y)
+attach(ESL.mixture)
+plot(x, col = y + 1)
+
+dat = data.frame(y = factor(y), x)
+fit_linear = svm(factor(y) ~ ., data = dat, scale = FALSE, kernel = "linear", cost = 5)
+fit_poly = svm(factor(y) ~ ., data = dat, scale = FALSE, kernel = "polynomial", degree = 5, cost = 5)
+fit_radial = svm(factor(y) ~ ., data = dat, scale = FALSE, kernel = "radial", cost = 5)
+
+plotsvm = function(model, lines){
+  if(missing(lines)) {
+    xgrid = expand.grid(X1 = px1, X2 = px2)
+    ygrid = predict(model, xgrid)
+    plot(xgrid, col = as.numeric(ygrid), pch = 20, cex = .2)
+    points(x, col = y + 1, pch = 19)
+  }
+  else {
+    xgrid = expand.grid(X1 = px1, X2 = px2)
+    ygrid = predict(model, xgrid)
+    func = predict(model, xgrid, decision.values = TRUE)
+    func = attributes(func)$decision
+    bayesfunc = predict(fit_radial, xgrid, decision.values = TRUE)
+    bayesfunc = attributes(bayesfunc)$decision
+    plot(xgrid, col = as.numeric(ygrid), pch = 20, cex = .2)
+    points(x, col = y + 1, pch = 19)
+    contour(px1, px2, matrix(func, 69, 99), level = 0, add = TRUE)
+    contour(px1, px2, matrix(bayesfunc, 69, 99),
+            level = 0.5, add = TRUE, col = "blue", lwd = 2)
+  }
+}
+
+par(mfrow=c(1,3))
+plotsvm(fit_linear,y)
+plotsvm(fit_poly, y)
+plotsvm(fit_radial, y)
+
+
+
+
+# SCAD penalty visualisation ---------------------------------------------------------------------------------
+x=seq(-5,5, by=0.1)
+l1=abs(x)
+l2=x^2
+
+scad=NULL;D=length(x)
+for( i in 1:D){
+  
+  if( abs(x[i])<=1 ){
+    scad[i] = abs(x[i])
+  }else if( abs(x[i]) < 3.5 ){
+    scad[i] =(-x[i]^2+2*3.5*abs(x[i])-1)/(2*(3.5-1))
+  }else{
+    scad[i] = (3.5+1)/2
+  }
+  
+}
+
+scad
+# lambda=1, b=3.7
+
+plot(x,l1,type="l", col=5, lwd=2, main="Penalty Functions", xlab=expression(beta), ylab=expression(R(beta)))
+lines(x,l2,col=6,lwd=2)
+lines(x,l1,col=5,lwd=2)
+lines(x,scad,col=7,lwd=2)
+legend("bottomright",legend=c("l1","l2","SCAD"),lty=c(1,1,1),col=c(5,6,7))
+
+
+
+
+# Plot loss functions ----------------------------------------------------------------------------------------
+yf = seq( -2, +2, length.out=100 )
+
+# Missclassification loss:
+miss_classification_loss = rep( 0, length(yf) )
+miss_classification_loss[ yf<0 ] = 1.0
+plot( yf, miss_classification_loss, type="l", lwd=2, col="gray", xlim=c(-2,+2), ylim=c(0,3),
+      main="Loss Functions", xlab=expression(y%.% phi), ylab="Loss" )
+
+# Binomial deviance:
+lines( yf, log( 1 + exp( -2 * yf ) )/log(2), type="l", lwd=2,  col="7" )
+
+# Hinge loss:
+hinge_loss = 1 - yf
+hinge_loss[ hinge_loss<0 ] = 0
+lines( yf, hinge_loss, type="l", lwd=2, col=6)
+
+legend("topright",legend=c("Binomial Deviance","Hinge Loss"), lty=c(1,1), lwd=c(2,2), col=c(7,6))

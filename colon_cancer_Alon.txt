@@ -1,0 +1,206 @@
+install.packages("devtools")
+install_github('ramhiser/datamicroarray')
+require(devtools)
+require(datamicroarray)
+require(magrittr)
+require(caret)
+require(e1071)
+require(penalizedSVM)
+require(pROC)
+
+data('alon', package = 'datamicroarray')
+head(alon)
+describe_data()
+
+# Load the data and remove NAs
+alon <- na.omit(alon)
+class(alon)
+dim(alon$x)
+length(alon$y)
+colon = cbind(alon$y, alon$x)
+as.factor(colon[,1] -1) == ifelse(alon$y == "t", 1, 0) # TRUE
+colon = as.data.frame(colon)
+
+
+
+
+# ALGORITHMS -------------------------------------------------------------------------------------------------
+set.seed(42)
+trainingsamples <- colon[,1] %>% # GROUP
+  createDataPartition(p = 0.5, list = FALSE)
+traindata <- colon[trainingsamples, ] %>% print()
+testdata <- colon[-trainingsamples, ]
+traindata[,1] == testdata[,1] # good; balanced
+xtrain = data.matrix(alon$x[trainingsamples,])
+dim(xtrain)
+xtest = data.matrix(alon$x[-trainingsamples,])
+ytrain = ifelse(alon$y[trainingsamples] == "t", 1, 0)
+ytest = ifelse(alon$y[-trainingsamples] == "t", 1, 0)
+
+
+## Logistic Regression:
+set.seed(42)
+lr_model_col = glm(ytrain~., data=data.frame(xtrain[,1:75]), family=binomial)
+summary(lr_model_col)
+xtrain[,1:75]
+varImp(lr_model_col)
+coef(lr_model_col)
+plot(lr_model_col)
+
+
+## LASSO LR:
+set.seed(42)
+cv_lasso_col = cv.glmnet(xtrain[,1:2000], ytrain, family=binomial, alpha=1, nfolds=5)
+lambda.min_lasso_col = cv_lasso_col$lambda.min
+coef_lasso_col = coef(cv_lasso_col, s= lambda.min_lasso_col)
+plot(cv_lasso_col, ylab="Binomial Deviance")
+
+lasso_model_col = glmnet(xtrain[,1:2000], ytrain, family="binomial", alpha=1)
+coef(lasso_model_col)
+plot(lasso_model_col)
+plot(lasso_model_col,"lambda",label=T, main="")
+abline(v=log(lambda.min_lasso_col), lty=3)
+
+coef(cv_lasso_col, s=lambda.min_lasso_col)
+sum(abs(coef(cv_lasso_col, s=lambda.min_lasso_col))>0)
+summary(sum(abs(coef(cv_lasso_col, s=lambda.min_lasso_col))>0))
+
+
+## Elastic-net LR:
+set.seed(42)
+fitControl <- trainControl("cv", number = 5, savePredictions = TRUE)
+en_model_col <- train(x=xtrain, y=as.factor(ytrain), data = traindata,
+                      method = "glmnet",
+                      trControl = fitControl,
+                      tuneLength = 10
+)
+# Best tuning parameter
+en_model_col
+en_model_col$bestTune
+
+# Coefficient of the final model
+coef(en_model_col$finalModel, en_model_col$bestTune$lambda)
+sum(abs(coef(en_model_col$finalModel, en_model_col$bestTune$lambda))>0)
+plot(en_model_col)
+plot(en_model_col$finalModel, "lambda", label=T, main="")
+abline(v=log(en_model_col$bestTune$lambda), lty=3)
+
+
+### Kernel LR (CVST):
+#set.seed(42)
+#d = constructData(x=xtrain, y=as.factor(ytrain))
+#class(d)=="CVST.data"   # TRUE
+#klr_learner = constructKlogRegLearner()
+#param = constructParams(kernel='rbfdot', sigma=10^(-1:5), lambda=10^(-2:1))
+#opt_col = CVST::CV(d, klr_learner, param, fold = 5, verbose = TRUE)
+#param_opt_col = list(kernel='rbfdot',
+#                     sigma=opt_col$`kernel=rbfdot sigma=0.1 lambda=0.01`$sigma,
+#                     lambda=opt_col$`kernel=rbfdot sigma=0.1 lambda=0.01`$lambda)
+#klr_model_col = klr_learner$learn(d, param_opt_col)
+#klr_model_col
+#summary(klr_model_col)
+
+## predictions with package
+#new_d = constructData(x=xtest, y=as.factor(ytest))
+#klr_pred_col = klr_learner$predict(klr_model_col, new_d)
+#klr_pred_col
+#class(klr_pred_col)
+
+## only two metrics can get:
+#sum(klr_pred_col != ytrain) / getN(new_d)
+#RMSE(as.numeric(klr_pred_col), as.numeric(ytest)) # RMSE
+
+
+## Support-vector machine (linear):
+set.seed(42)
+svm_lin_model_col <- train(xtrain, as.factor(ytrain), data = traindata, method = "svmLinear",
+                           trControl = fitControl,
+                           tuneLength = 10
+)
+svm_lin_model_col
+svm_lin_model_col$bestTune
+svm_lin_model_col2 = svm(xtrain, ytrain, kernel="linear", cross=5)
+summary(svm_lin_model_col2)
+
+
+## Support-vector machine (RBF):
+set.seed(42)
+svm_rbf_model_col <- train(xtrain, as.factor(ytrain), data = traindata, method = "svmRadial",
+                           trControl = fitControl,
+                           tuneLength = 10
+)
+svm_rbf_model_col
+svm_rbf_model_col$bestTune
+svm_rbf_model_col2 = svm(xtrain, ytrain, kernel="radial", cross=5)
+summary(svm_rbf_model_col2)
+
+
+## SCAD SVM:
+set.seed(42)
+Lambda.scad = seq(0.01,0.05,0.01)
+scad_model_col = svmfs(x = xtrain[,1:2000], y = 2*ytrain-1, 
+                       fs.method = "scad", 
+                       lambda1.set = Lambda.scad,
+                       parms.coding = "none", show="none",
+                       maxIter = 10, inner.val.method = "cv", cross.inner= 5,
+                       seed=42, verbose=FALSE)
+summary(scad_model_col)
+str(scad_model_col)
+scad_model_col$model$xind
+length(scad_model_col$model$xind)
+
+# predictions with package
+scad_pred_col = predict(scad_model_col, newdata=xtest) 
+summary(scad_pred_col)
+scad_pred_col$fitted
+scad_test_error_col<-predict(scad_model_col, newdata=xtest, newdata.labels=2*ytest-1)
+scad_test_error_col
+scad_test_error_col$sensitivity
+scad_test_error_col$specificity
+
+
+
+
+# TESTSET PREDICTIONS ----------------------------------------------------------------------------------------
+lr_pred_col = predict(lr_model_col, newdata=data.frame(xtest[,1:75]), type="response")
+lasso_pred_col = predict(cv_lasso_col, xtest[,1:2000], type="response")
+en_pred_col = t(predict(en_model_col, xtest, type="prob")[2])
+svm_lin_pred_col2 = predict(svm_lin_model_col2, xtest, type='response')[-c(6,17,18,26)]
+svm_rbf_pred_col = predict(svm_rbf_model_col, xtest)
+svm_rbf_pred_col2 = predict(svm_rbf_model_col2, xtest, type='response')
+
+# Confusion Matrix
+confusionMatrix(as.factor(round(lr_pred_col)), as.factor(ytest), positive = "1")
+confusionMatrix(as.factor(ifelse(lasso_pred_col>0.5,1,0)), as.factor(ytest), positive = "1")
+confusionMatrix(as.factor(round(en_pred_col)), as.factor(ytest), positive = "1")
+confusionMatrix(as.factor(round(svm_lin_pred_col2)), as.factor(ytest[-c(6,17,18,26)]), positive = "1")
+confusionMatrix(as.factor(svm_rbf_pred_col), as.factor(ytest), positive = "1")
+
+
+# ROC curves & AUC
+roc_lr = roc(as.vector(ytest), as.vector(lr_pred_col))
+roc_lasso = roc(as.vector(ytest), as.vector(lasso_pred_col))
+roc_en = roc(as.vector(ytest), as.vector(en_pred_col))
+roc_svm_lin = roc(as.vector(ytest[-c(6,17,18,26)]), as.vector(as.numeric(svm_lin_pred_col2)))
+roc_svm_rbf = roc(as.vector(ytest), as.vector(as.numeric(svm_rbf_pred_col2)))
+
+
+# Plot the ROC curves
+plot.roc(roc_lr, col="2", ylim=c(0,1), xlim=c(1,0))
+lines(roc_lasso, col="3")
+lines(roc_en, col="4")
+lines(roc_svm_lin, col="5")
+lines(roc_svm_rbf, col="6")
+legend("bottomright", legend=c("Logistic Regression", "LASSO", "Elastic-net", "SVM_Linear", "SVM_Radial"),
+       col=c(2,3,4,5,6), lwd=2)
+
+
+
+
+# Visualisation ----------------------------------------------------------------------------------------------
+summary(alon$y)
+pairs(alon$x[,1:10], col=as.factor(alon$y))
+
+cor_col = cor(alon$x[,c(3,4,7,8,9,138,143,165,187,206,988,1325, # 12 important
+                        1,2,5,6,10,11,12,13,14,15,16,17)]) # 12 unimportant
+corrplot(cor_col, order="original", tl.cex=0.7)
